@@ -229,6 +229,8 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
+    /// 是否将原生 print 调用边界传给接收端；不进入解释器快照。
+    print_call_boundaries: bool,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
@@ -243,6 +245,7 @@ impl Default for Child {
             type_checker: None,
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
+            print_call_boundaries: false,
             os_policy: OsPolicy::default(),
             module_stubs: Vec::new(),
         }
@@ -271,6 +274,10 @@ impl Child {
                 // silent desync. Emit the fatal last gasp and stop the child.
                 if let Err(refusal) = check_protocol_version(configure.protocol_version) {
                     sink.send(&self.fatal_event(&refusal))?;
+                    return Ok(HandleOutcome::Fatal);
+                }
+                if configure.print_call_boundaries && configure.protocol_version < 7 {
+                    sink.send(&self.fatal_event("print_call_boundaries requires protocol version 7"))?;
                     return Ok(HandleOutcome::Fatal);
                 }
                 self.handle_configure(configure)
@@ -464,6 +471,7 @@ impl Child {
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
+            self.print_call_boundaries = configure.print_call_boundaries;
             // Applied on arrival rather than in `ensure_repl`, which a `Load`
             // never reaches: a dump restores the repl directly, and print
             // pacing is a delivery setting the dump does not carry.
@@ -523,6 +531,7 @@ impl Child {
             monty_version: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
             print_flush_interval_ms: _,
+            print_call_boundaries: _,
             // validated and stored when the `Configure` arrived
             os_policy: _,
             // a relay's concern; the child never stores sessions
@@ -642,7 +651,7 @@ impl Child {
             self.discard_pending_snippet();
             return event;
         }
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.print_call_boundaries);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result);
         print.drain();
@@ -781,7 +790,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.print_call_boundaries);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
@@ -811,7 +820,7 @@ impl Child {
         let ReplProgress::NameLookup(lookup) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.print_call_boundaries);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome);
         print.drain();
@@ -840,7 +849,7 @@ impl Child {
             SessionState::AwaitingStubs(pending) => return self.fail_pending_feed(*pending, &exc),
             _ => unreachable!("checked above"),
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.print_call_boundaries);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
@@ -879,7 +888,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.print_call_boundaries);
         let outcome = match (*progress, reply) {
             (ReplProgress::FunctionCall(call), FuturesReply::Eager(result)) => {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
@@ -1096,6 +1105,7 @@ impl Child {
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
+        self.print_call_boundaries = false;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
         self.type_checker.as_mut().map_or(Ok(()), TypeChecker::reset)
@@ -1314,7 +1324,10 @@ fn eager_result(
 ///
 /// A zero `interval` disables the timer and restores line buffering, one event
 /// per completed line.
+/// 启用调用边界时，已有正文随 begin/end 立即发送，边界不依赖行或刷新条件。
 struct ProtoPrint<'a> {
+    /// 边界先于后续正文、后于同事件已有正文；不存储调用深度。
+    call_boundaries: bool,
     /// Buffered output, one segment per run on a single stream.
     segments: Vec<pb::PrintSegment>,
     /// Text bytes held across `segments`, so the size check stays O(1).
@@ -1330,8 +1343,9 @@ impl<'a> ProtoPrint<'a> {
     /// Flush threshold for output that never reaches the interval.
     const FLUSH_BYTES: usize = 8 * 1024;
 
-    fn new(sink: &'a mut dyn EventSink, interval: Duration) -> Self {
+    fn new(sink: &'a mut dyn EventSink, interval: Duration, call_boundaries: bool) -> Self {
         Self {
+            call_boundaries,
             segments: Vec::new(),
             buffered_bytes: 0,
             sink,
@@ -1348,7 +1362,7 @@ impl<'a> ProtoPrint<'a> {
         self.buffered_since = None;
         self.buffered_bytes = 0;
         let segments = mem::take(&mut self.segments);
-        self.send(segments)
+        self.send(segments, pb::PrintBoundary::Unspecified)
     }
 
     /// Emits one `Print` event per completed line, leaving any trailing
@@ -1368,7 +1382,7 @@ impl<'a> ProtoPrint<'a> {
                 self.segments.remove(0);
             }
             self.buffered_bytes -= line.iter().map(|segment| segment.text.len()).sum::<usize>();
-            self.send(line)?;
+            self.send(line, pb::PrintBoundary::Unspecified)?;
         }
         if self.segments.is_empty() {
             self.buffered_since = None;
@@ -1386,9 +1400,10 @@ impl<'a> ProtoPrint<'a> {
     }
 
     /// Sends `segments` as one `Print` event.
-    fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
+    fn send(&mut self, segments: Vec<pb::PrintSegment>, boundary: pb::PrintBoundary) -> Result<(), MontyException> {
         let event = event(pb::child_event::Kind::Print(pb::Print {
             segments: segments.into(),
+            boundary: boundary.into(),
         }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
@@ -1396,6 +1411,18 @@ impl<'a> ProtoPrint<'a> {
                 Some(format!("failed to stream print output: {err}")),
             )
         })
+    }
+
+    /// 将已有正文与边界一起发出；接收端先读正文再处理边界，保持逐字次序。
+    fn boundary(&mut self, boundary: pb::PrintBoundary) -> Result<(), MontyException> {
+        if self.call_boundaries {
+            self.buffered_since = None;
+            self.buffered_bytes = 0;
+            let segments = mem::take(&mut self.segments);
+            self.send(segments, boundary)
+        } else {
+            Ok(())
+        }
     }
 
     /// Flushes whatever the buffer has earned: complete lines when the timer
@@ -1486,6 +1513,14 @@ fn wire_stream(stream: PrintStream) -> i32 {
 }
 
 impl PrintWriterCallback for ProtoPrint<'_> {
+    fn print_begin(&mut self) -> Result<(), MontyException> {
+        self.boundary(pb::PrintBoundary::Begin)
+    }
+
+    fn print_end(&mut self) -> Result<(), MontyException> {
+        self.boundary(pb::PrintBoundary::End)
+    }
+
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
         self.write(PrintStream::Stdout, &output)
     }

@@ -2155,6 +2155,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         // Diagnostic only, so a rejection can report both builds.
         monty_version: MONTY_VERSION.to_owned(),
         print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
+        print_call_boundaries: false,
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),

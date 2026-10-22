@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{DropGuard, HeapData},
     intern::StaticStrings,
     types::PyTrait,
     value::{Marker, Value},
@@ -23,6 +23,20 @@ use crate::{
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
 pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let mut args = DropGuard::new(args, vm);
+    args.as_parts_mut().1.print_writer.print_begin()?;
+    let (args, vm) = args.into_parts();
+    let result = print_objects(vm, args);
+    // 普通异常也关闭边界；若结束通知同时失败，保留原始 Python 异常。
+    let end = vm.print_writer.print_end();
+    result.and_then(|value| {
+        end?;
+        Ok(value)
+    })
+}
+
+/// 在调用边界内校验参数并按原始顺序输出；转换回调可以递归调用 print。
+fn print_objects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PrintArgs {
         objects,
         sep,

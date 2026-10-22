@@ -56,6 +56,25 @@ Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
 Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
 
+## 原生 print 调用边界
+
+协议版本 7 的 `Configure.print_call_boundaries = true` 启用
+`Print.boundary`（`BEGIN` / `END`）；默认关闭，保留原有批处理。
+接收端先消费事件中的全部 `segments`，再处理边界。正文允许为空；
+按 BEGIN/END 维护深度即可将最外层 print 及其转换回调内的递归输出
+组成一个块，无需调用 ID，也不重排 stdout/stderr 正文。
+
+BEGIN 在进入 builtin 后、参数校验前发出；END 覆盖空输出、参数错误和
+普通异常。END 表示离开调用，错误仍由原执行结果返回。参数表达式求值
+失败不会进入调用。`file=sys.stdout` / `sys.stderr` 保留每段原有标签，
+`flush` 保持已有语义，不决定边界。行与 8 KiB/时间刷新只决定运输分片。
+
+当前 print 同步执行，挂起和 Dump/Load 不跨越活动调用；AbortFeed 不补造
+END，恢复不重放旧输出。此开关随 Configure 生效，不存入解释器快照。
+硬退出或传输失败可能保留未闭合的前缀；接收端不得补造成功终结。
+此协议不实现预览、截断或存储策略。版本 6 worker 会拒绝版本 7，
+避免依赖边界的接收端静默失去能力。
+
 ## Values are special-cased for performance
 
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.

@@ -610,8 +610,8 @@ message Configure {
   // How long the child may hold buffered `print()` output before emitting it
   // as a `Print` event, in milliseconds. Absent means the child's default
   // (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
-  // buffering — one event per completed line, as before this field existed —
-  // for a host that wants each `print()` delivered on its own.
+  // buffering — one event per completed line, as before this field existed.
+  // Lines and transport flushes are not print-call boundaries.
   //
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
@@ -625,6 +625,9 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // 启用原生调用边界；需 protocol_version >= 7。默认保留原有批处理。
+  // 与刷新间隔一样，这是接收端配置，不保存到解释器快照。
+  bool print_call_boundaries = 14;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -842,6 +845,20 @@ message PrintSegment {
 // streams batches into one event without losing that order.
 message Print {
   repeated PrintSegment segments = 1;
+  // 先消费全部 segments，再应用此边界；边界事件允许正文为空。
+  // 仅在 Configure.print_call_boundaries=true 时发送。
+  PrintBoundary boundary = 2;
+}
+
+// 接收端只需递增/递减深度；正文保持原运输次序，无调用 ID 或树重排。
+// 空输出、参数错误和普通异常均有 BEGIN/END。END 表示退出 builtin，
+// 成败由原有执行结果表达。硬退出/传输中断可能留下未闭合的前缀。
+// 当前原生 print 同步完成，挂起与 Dump/Load 发生在 print 边界外，
+// AbortFeed 不补造边界；恢复只发送后续实际调用，不重放旧输出。
+enum PrintBoundary {
+  PRINT_BOUNDARY_UNSPECIFIED = 0;
+  PRINT_BOUNDARY_BEGIN = 1;
+  PRINT_BOUNDARY_END = 2;
 }
 
 // Suspension: an external function call, or a host method call when `object_id`

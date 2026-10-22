@@ -1264,6 +1264,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
             segments: alternating.into(),
+            boundary: 0,
         })));
 
         let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -1284,6 +1285,7 @@ mod tests {
         let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+            boundary: 0,
             segments: vec![pb::PrintSegment {
                 stream: pb::PrintStream::Stdout as i32,
                 text: "hello\n".to_owned(),

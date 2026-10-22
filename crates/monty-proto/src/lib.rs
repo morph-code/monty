@@ -33,7 +33,9 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds opt-in native print-call boundaries; version 6 children
+/// must reject a parent that relies on them instead of silently ignoring it.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///

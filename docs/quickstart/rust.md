@@ -199,6 +199,10 @@ Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception
 [`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
 `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
+`PrintWriter::Callback` 的 `print_begin` / `print_end` 可观察原生调用边界，
+包括转换回调里的嵌套调用、空输出和普通异常；默认实现不做处理。
+正文仍沿原调用次序传递，END 只表示退出 builtin，不表示成功。
+
 ### Resource limits
 
 ```rust

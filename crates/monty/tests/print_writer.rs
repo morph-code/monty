@@ -8,9 +8,14 @@
 //! To update after an intentional change, run `cargo insta review` (or set
 //! `INSTA_UPDATE=always`).
 
+use std::borrow::Cow;
+
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CollectedStreams, CompileOptions, PrintStream, PrintWriter, ResourceTracker};
+use monty_types::{
+    CollectedStreams, CompileOptions, ExcType, MontyException, PrintStream, PrintWriter, PrintWriterCallback,
+    ResourceTracker,
+};
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care
@@ -306,4 +311,96 @@ fn print_file_other_than_a_sys_stream_raises() {
         err.message().unwrap(),
         @"print() 'file' argument must be sys.stdout or sys.stderr, not int"
     );
+}
+
+/// 验证边界通知失败时的引用释放与原异常优先级。
+#[derive(Default)]
+struct BoundaryCallback {
+    fail_begin: bool,
+    fail_end: bool,
+    events: Vec<&'static str>,
+}
+
+impl PrintWriterCallback for BoundaryCallback {
+    fn print_begin(&mut self) -> Result<(), MontyException> {
+        self.events.push("begin");
+        if self.fail_begin {
+            Err(MontyException::new(ExcType::RuntimeError, Some("begin failed".into())))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn print_end(&mut self) -> Result<(), MontyException> {
+        self.events.push("end");
+        if self.fail_end {
+            Err(MontyException::new(ExcType::RuntimeError, Some("end failed".into())))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn stdout_write(&mut self, _text: Cow<'_, str>) -> Result<(), MontyException> {
+        Ok(())
+    }
+    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
+        Ok(())
+    }
+}
+
+#[test]
+fn print_begin_failure_releases_owned_arguments_without_end() {
+    let mut callback = BoundaryCallback {
+        fail_begin: true,
+        ..Default::default()
+    };
+    let mut run = MontyRun::new(
+        "print(['x' * 1000])".into(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = run
+        .run(vec![], ResourceTracker::default(), PrintWriter::Callback(&mut callback))
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RuntimeError);
+    assert_eq!(error.message(), Some("begin failed"));
+    assert_eq!(callback.events, vec!["begin"]);
+}
+
+#[test]
+fn print_end_failure_propagates_on_successful_print() {
+    let mut callback = BoundaryCallback {
+        fail_end: true,
+        ..Default::default()
+    };
+    let mut run = MontyRun::new("print('x')".into(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let error = run
+        .run(vec![], ResourceTracker::default(), PrintWriter::Callback(&mut callback))
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RuntimeError);
+    assert_eq!(error.message(), Some("end failed"));
+    assert_eq!(callback.events, vec!["begin", "end"]);
+}
+
+#[test]
+fn print_original_exception_survives_end_notification_failure() {
+    let mut callback = BoundaryCallback {
+        fail_end: true,
+        ..Default::default()
+    };
+    let mut run = MontyRun::new(
+        "class Bad:\n def __str__(self):\n  raise ValueError('ordinary')\nprint(Bad())".into(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = run
+        .run(vec![], ResourceTracker::default(), PrintWriter::Callback(&mut callback))
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::ValueError);
+    assert_eq!(error.message(), Some("ordinary"));
+    assert_eq!(callback.events, vec!["begin", "end"]);
 }

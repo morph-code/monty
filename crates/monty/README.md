@@ -46,6 +46,10 @@ assert_eq!(result, MontyObject::int(55));
 
 Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
+`PrintWriter::Callback` 的 `print_begin` / `print_end` 可观察原生调用边界，
+包括转换回调里的嵌套调用、空输出和普通异常；默认实现不做处理。
+正文仍沿原调用次序传递，END 只表示退出 builtin，不表示成功。
+
 ## Resource limits
 
 Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator.

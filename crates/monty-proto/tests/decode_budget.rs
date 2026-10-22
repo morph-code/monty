@@ -133,6 +133,7 @@ fn generated_wrapper_attacks_are_bounded() {
 #[test]
 fn growth_is_rejected_before_allocating() {
     let mut print = pb::Print {
+        boundary: 0,
         segments: vec![pb::PrintSegment::default(); 1024].into(),
     };
     let bytes = repeated_field(1, WireType::LengthDelimited, &[0x12, 1, b'x'], 1);

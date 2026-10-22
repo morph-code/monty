@@ -808,8 +808,8 @@ pub struct Configure {
     /// How long the child may hold buffered `print()` output before emitting it
     /// as a `Print` event, in milliseconds. Absent means the child's default
     /// (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
-    /// buffering — one event per completed line, as before this field existed —
-    /// for a host that wants each `print()` delivered on its own.
+    /// buffering — one event per completed line, as before this field existed.
+    /// Lines and transport flushes are not print-call boundaries.
     ///
     /// Output is always flushed before a turn-ending event whatever this says, so
     /// the field trades streaming latency for event volume and nothing else.
@@ -827,6 +827,10 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// 启用原生调用边界；需 protocol_version >= 7。默认保留原有批处理。
+    /// 与刷新间隔一样，这是接收端配置，不保存到解释器快照。
+    #[prost(bool, tag = "14")]
+    pub print_call_boundaries: bool,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1070,6 +1074,10 @@ pub struct PrintSegment {
 pub struct Print {
     #[prost(message, repeated, tag = "1")]
     pub segments: crate::budgeted_prost::alloc::vec::Vec<PrintSegment>,
+    /// 先消费全部 segments，再应用此边界；边界事件允许正文为空。
+    /// 仅在 Configure.print_call_boundaries=true 时发送。
+    #[prost(enumeration = "PrintBoundary", tag = "2")]
+    pub boundary: i32,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -1631,6 +1639,51 @@ impl PrintStream {
             "PRINT_STREAM_UNSPECIFIED" => Some(Self::Unspecified),
             "PRINT_STREAM_STDOUT" => Some(Self::Stdout),
             "PRINT_STREAM_STDERR" => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+}
+/// 接收端只需递增/递减深度；正文保持原运输次序，无调用 ID 或树重排。
+/// 空输出、参数错误和普通异常均有 BEGIN/END。END 表示退出 builtin，
+/// 成败由原有执行结果表达。硬退出/传输中断可能留下未闭合的前缀。
+/// 当前原生 print 同步完成，挂起与 Dump/Load 发生在 print 边界外，
+/// AbortFeed 不补造边界；恢复只发送后续实际调用，不重放旧输出。
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    crate::budgeted_prost::Enumeration
+)]
+#[prost(prost_path = "crate::budgeted_prost")]
+#[repr(i32)]
+pub enum PrintBoundary {
+    Unspecified = 0,
+    Begin = 1,
+    End = 2,
+}
+impl PrintBoundary {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PRINT_BOUNDARY_UNSPECIFIED",
+            Self::Begin => "PRINT_BOUNDARY_BEGIN",
+            Self::End => "PRINT_BOUNDARY_END",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PRINT_BOUNDARY_UNSPECIFIED" => Some(Self::Unspecified),
+            "PRINT_BOUNDARY_BEGIN" => Some(Self::Begin),
+            "PRINT_BOUNDARY_END" => Some(Self::End),
             _ => None,
         }
     }
