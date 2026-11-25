@@ -65,6 +65,7 @@ fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
         value: 0,
     })));
     let print = framed(&worker_event(pb::worker_event::Kind::Print(pb::Print {
+        boundary: 0,
         segments: vec![pb::PrintSegment {
             stream: pb::PrintStream::Stdout as i32,
             text: "go\n".to_owned(),

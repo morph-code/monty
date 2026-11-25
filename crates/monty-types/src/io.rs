@@ -84,6 +84,22 @@ pub enum PrintWriter<'a> {
 }
 
 impl PrintWriter<'_> {
+    /// 开始一次 builtin print 调用，包括参数校验；只有 Callback 观察此通知。
+    pub fn print_begin(&mut self) -> Result<(), MontyException> {
+        match self {
+            Self::Callback(cb) => cb.print_begin(),
+            _ => Ok(()),
+        }
+    }
+
+    /// 结束一次已开始的调用，包括空输出和普通异常；硬退出不保证通知。
+    pub fn print_end(&mut self) -> Result<(), MontyException> {
+        match self {
+            Self::Callback(cb) => cb.print_end(),
+            _ => Ok(()),
+        }
+    }
+
     /// Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap.
     pub fn collect_string(buf: &mut String) -> PrintWriter<'_> {
         PrintWriter::CollectString(buf, Some(DEFAULT_MAX_PRINT_COLLECT_BYTES))
@@ -300,6 +316,19 @@ pub fn check_print_collect_limit(
 /// Implement this trait and pass it via [`PrintWriter::Callback`] to capture
 /// or redirect print output from sandboxed Python code.
 pub trait PrintWriterCallback {
+    /// 进入 builtin 后、校验参数及转换对象前调用；递归 print 正常嵌套。
+    /// 参数表达式的求值发生在 builtin 之前，不在此边界内。
+    fn print_begin(&mut self) -> Result<(), MontyException> {
+        Ok(())
+    }
+
+    /// 成功的 begin 对应一次 end，覆盖空输出、参数错误和普通异常。
+    /// end 仅表示退出 builtin，不表示打印成功；错误仍沿原结果返回。
+    /// begin 失败、进程硬退出或传输失败不保证配对。
+    fn print_end(&mut self) -> Result<(), MontyException> {
+        Ok(())
+    }
+
     /// Called once for each formatted argument passed to `print()`.
     ///
     /// This method is responsible for writing only the given argument's text, and must

@@ -35,7 +35,10 @@ pub mod worker;
 /// built before the change. Old workers then refuse the new client with a
 /// version error instead of misbehaving. A change old workers can safely
 /// ignore needs no increment.
-pub const PROTOCOL_VERSION: u32 = 9;
+///
+/// Version 10 adds opt-in native print-call boundaries; version 9 workers
+/// must reject a client that relies on them instead of silently ignoring it.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The oldest client [`PROTOCOL_VERSION`] a worker built from this code serves.
 ///
